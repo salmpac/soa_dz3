@@ -1,0 +1,122 @@
+diff --git a/yt/yt/core/crypto/tls.cpp b/yt/yt/core/crypto/tls.cpp
+index 604f59422..f892bf38b 100644
+--- a/yt/yt/core/crypto/tls.cpp
++++ b/yt/yt/core/crypto/tls.cpp
+@@ -1019,6 +1019,19 @@ IDialerPtr TSslContext::CreateDialer(
+     return New<TTlsDialer>(Impl_, dialer, config, poller);
+ }
+ 
++IConnectionPtr TSslContext::StartClientTls(
++    IConnectionPtr underlying,
++    const IPollerPtr& poller,
++    const std::optional<std::string>& host)
++{
++    auto connection = New<TTlsConnection>(Impl_, poller, std::move(underlying));
++    if (host) {
++        connection->SetHost(*host);
++    }
++    connection->StartClient(Impl_->IsInsecureSkipVerify());
++    return connection;
++}
++
+ IListenerPtr TSslContext::CreateListener(
+     const TNetworkAddress& at,
+     const IPollerPtr& poller,
+diff --git a/yt/yt/core/crypto/tls.h b/yt/yt/core/crypto/tls.h
+index a5fd2e291..371e98a70 100644
+--- a/yt/yt/core/crypto/tls.h
++++ b/yt/yt/core/crypto/tls.h
+@@ -100,6 +100,17 @@ public:
+         const NConcurrency::IPollerPtr& poller,
+         const NLogging::TLogger& logger);
+ 
++    //! Starts client-side TLS over an already established connection.
++    /*!
++     *  Useful for protocols that negotiate TLS in plaintext first
++     *  (e.g. PostgreSQL SSLRequest or STARTTLS).
++     *  If #host is set, it is used for SNI and server certificate verification.
++     */
++    NNet::IConnectionPtr StartClientTls(
++        NNet::IConnectionPtr underlying,
++        const NConcurrency::IPollerPtr& poller,
++        const std::optional<std::string>& host = {});
++
+     NNet::IListenerPtr CreateListener(
+         const NNet::TNetworkAddress& at,
+         const NConcurrency::IPollerPtr& poller,
+diff --git a/yt/yt/core/rpc/grpc/helpers.cpp b/yt/yt/core/rpc/grpc/helpers.cpp
+index 7d1f2b6d6..28942b0ee 100644
+--- a/yt/yt/core/rpc/grpc/helpers.cpp
++++ b/yt/yt/core/rpc/grpc/helpers.cpp
+@@ -444,6 +444,39 @@ TErrorCode StatusCodeToErrorCode(grpc_status_code statusCode)
+     }
+ }
+ 
++grpc_status_code ErrorToStatusCode(const TError& error)
++{
++    if (error.IsOK()) {
++        return GRPC_STATUS_OK;
++    }
++
++    if (error.HasAttributes()) {
++        if (auto statusCode = error.Attributes().Find<int>(GrpcStatusCodeAttributeKey)) {
++            if (*statusCode > GRPC_STATUS_OK && *statusCode <= GRPC_STATUS_UNAUTHENTICATED) {
++                return static_cast<grpc_status_code>(*statusCode);
++            }
++        }
++    }
++
++    auto code = error.GetCode();
++    if (code == NYT::EErrorCode::Canceled) {
++        return GRPC_STATUS_CANCELLED;
++    } else if (code == NYT::EErrorCode::Timeout) {
++        return GRPC_STATUS_DEADLINE_EXCEEDED;
++    } else if (code == NRpc::EErrorCode::AuthenticationError) {
++        return GRPC_STATUS_UNAUTHENTICATED;
++    } else if (code == NRpc::EErrorCode::InvalidCredentials) {
++        return GRPC_STATUS_PERMISSION_DENIED;
++    } else if (code == NRpc::EErrorCode::NoSuchService || code == NRpc::EErrorCode::NoSuchMethod) {
++        return GRPC_STATUS_UNIMPLEMENTED;
++    } else if (code == NRpc::EErrorCode::TransportError || code == NRpc::EErrorCode::Unavailable) {
++        return GRPC_STATUS_UNAVAILABLE;
++    } else if (code == NRpc::EErrorCode::RequestQueueSizeLimitExceeded) {
++        return GRPC_STATUS_RESOURCE_EXHAUSTED;
++    }
++    return GRPC_STATUS_UNKNOWN;
++}
++
+ std::string SerializeError(const TError& error)
+ {
+     // TODO(babenko): migrate to std::string
+diff --git a/yt/yt/core/rpc/grpc/helpers.h b/yt/yt/core/rpc/grpc/helpers.h
+index 5b42fe773..0f9e961e5 100644
+--- a/yt/yt/core/rpc/grpc/helpers.h
++++ b/yt/yt/core/rpc/grpc/helpers.h
+@@ -288,6 +288,14 @@ TSharedRef ExtractMessageFromEnvelopedMessage(const TSharedRef& data);
+ 
+ TErrorCode StatusCodeToErrorCode(grpc_status_code statusCode);
+ 
++//! Name of the error attribute that explicitly specifies gRPC status code
++//! to be reported by the server (e.g. NOT_FOUND for business errors).
++inline constexpr TStringBuf GrpcStatusCodeAttributeKey = "grpc_status_code";
++
++//! Converts server-side error to gRPC status code.
++//! Uses #GrpcStatusCodeAttributeKey if present, otherwise maps well-known RPC error codes.
++grpc_status_code ErrorToStatusCode(const TError& error);
++
+ std::string SerializeError(const TError& error);
+ TError DeserializeError(TStringBuf serializedError);
+ 
+diff --git a/yt/yt/core/rpc/grpc/server.cpp b/yt/yt/core/rpc/grpc/server.cpp
+index 1118f822d..a0b7e5330 100644
+--- a/yt/yt/core/rpc/grpc/server.cpp
++++ b/yt/yt/core/rpc/grpc/server.cpp
+@@ -1162,7 +1162,7 @@ private:
+             ops.back().op = GRPC_OP_SEND_STATUS_FROM_SERVER;
+             ops.back().flags = 0;
+             ops.back().reserved = nullptr;
+-            ops.back().data.send_status_from_server.status = error.IsOK() ? GRPC_STATUS_OK : GRPC_STATUS_UNKNOWN;
++            ops.back().data.send_status_from_server.status = ErrorToStatusCode(error);
+             ops.back().data.send_status_from_server.status_details = error.IsOK() ? nullptr : ErrorMessageSlice_.Unwrap();
+             ops.back().data.send_status_from_server.trailing_metadata_count = TrailingMetadataBuilder_.GetSize();
+             ops.back().data.send_status_from_server.trailing_metadata = TrailingMetadataBuilder_.Unwrap();

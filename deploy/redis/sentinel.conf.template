@@ -1,0 +1,20 @@
+# Sentinel поверх TLS. Плейсхолдеры подставляет sentinel-entrypoint.sh.
+port 0
+tls-port 26379
+tls-cert-file /certs/redis.crt
+tls-key-file /certs/redis.key
+tls-ca-cert-file /certs/ca.crt
+tls-auth-clients no
+tls-replication yes
+
+# В docker-сети адреса контейнеров меняются: работаем по именам хостов
+# (их же проверяет TLS при verify_full на стороне клиента).
+sentinel resolve-hostnames yes
+sentinel announce-hostnames yes
+sentinel announce-ip __ANNOUNCE_HOST__
+
+sentinel monitor mymaster redis-master 6379 2
+sentinel auth-pass mymaster __REDIS_PASSWORD__
+sentinel down-after-milliseconds mymaster 3000
+sentinel failover-timeout mymaster 10000
+sentinel parallel-syncs mymaster 1

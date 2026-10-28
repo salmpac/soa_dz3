@@ -1,0 +1,10 @@
+# Внешние исходники: скачиваются scripts/prepare-ytsaurus.sh
+/third_party/
+
+# Артефакты сборки и база для clangd (абсолютные пути)
+/.build/
+/compile_commands.json
+/.cache/
+
+# Сертификаты, скопированные для ручной проверки через grpcurl
+/tls/

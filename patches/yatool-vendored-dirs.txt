@@ -1,0 +1,6 @@
+# Каталоги из github.com/yandex/yatool, которых нет в открытом ytsaurus,
+# но которые нужны для статической сборки с musl (ya make -DMUSL=yes).
+contrib/libs/musl
+contrib/libs/musl_extra
+contrib/libs/asmlib
+contrib/libs/asmglibc

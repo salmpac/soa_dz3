@@ -1,0 +1,299 @@
+# Flight Booking: Booking Service (REST) -> gRPC -> Flight Service.
+#
+#   docker compose up --build
+#
+# Всё внутреннее взаимодействие идёт по TLS с сертификатами локального CA,
+# который генерирует одноразовый контейнер `certs`:
+#   - сервисы -> PostgreSQL: TLS verify-full + SCRAM-SHA-256 (без TLS сервер не пускает);
+#   - Flight Service -> Redis (master/replica/sentinel): TLS verify-full;
+#   - Booking Service -> Flight Service: gRPC поверх mTLS (сертификаты с обеих сторон)
+#     + API key в metadata.
+#
+# Секреты задаются в .env (см. .env.example); значения ниже - дефолты для локального запуска.
+
+x-postgres-tls: &postgres-tls
+  image: postgres:16
+  environment: &postgres-env
+    POSTGRES_USER: ${POSTGRES_USER:-soa}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-soa-db-password}
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+    interval: 2s
+    timeout: 3s
+    retries: 30
+  depends_on:
+    certs:
+      condition: service_completed_successfully
+
+x-flyway: &flyway
+  image: flyway/flyway:10
+  volumes:
+    - certs:/certs:ro
+  depends_on: &flyway-depends
+    certs:
+      condition: service_completed_successfully
+
+x-redis-node: &redis-node
+  image: redis:7
+  user: "999:999"
+  volumes:
+    - certs:/certs:ro
+  healthcheck:
+    test: ["CMD-SHELL", "redis-cli --tls --cacert /certs/ca.crt -a \"$${REDIS_PASSWORD}\" --no-auth-warning ping | grep -q PONG"]
+    interval: 2s
+    timeout: 3s
+    retries: 30
+
+x-redis-sentinel: &redis-sentinel
+  image: redis:7
+  user: "999:999"
+  entrypoint: ["/bin/sh", "/etc/redis/sentinel-entrypoint.sh"]
+  volumes:
+    - certs:/certs:ro
+    - ./deploy/redis/sentinel.conf.template:/etc/redis/sentinel.conf.template:ro
+    - ./deploy/redis/sentinel-entrypoint.sh:/etc/redis/sentinel-entrypoint.sh:ro
+  healthcheck:
+    test: ["CMD-SHELL", "redis-cli --tls --cacert /certs/ca.crt -p 26379 sentinel get-master-addr-by-name mymaster | grep -q redis"]
+    interval: 2s
+    timeout: 3s
+    retries: 30
+  depends_on:
+    redis-master:
+      condition: service_healthy
+    redis-replica:
+      condition: service_healthy
+
+services:
+  # --- TLS-сертификаты (одноразово) ---------------------------------------------
+
+  certs:
+    image: alpine:3.20
+    entrypoint: ["/bin/sh", "-c", "apk add --no-cache openssl >/dev/null && /bin/sh /generate.sh"]
+    volumes:
+      - certs:/certs
+      - ./deploy/certs/generate.sh:/generate.sh:ro
+
+  # --- PostgreSQL ----------------------------------------------------------------
+
+  flight-db:
+    <<: *postgres-tls
+    environment:
+      <<: *postgres-env
+      POSTGRES_DB: flights
+    command: >
+      postgres
+      -c ssl=on
+      -c ssl_cert_file=/certs/flight-db.crt
+      -c ssl_key_file=/certs/flight-db.key
+      -c hba_file=/etc/postgresql/pg_hba.conf
+    volumes:
+      - certs:/certs:ro
+      - ./deploy/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - flight-db-data:/var/lib/postgresql/data
+
+  booking-db:
+    <<: *postgres-tls
+    environment:
+      <<: *postgres-env
+      POSTGRES_DB: bookings
+    command: >
+      postgres
+      -c ssl=on
+      -c ssl_cert_file=/certs/booking-db.crt
+      -c ssl_key_file=/certs/booking-db.key
+      -c hba_file=/etc/postgresql/pg_hba.conf
+    volumes:
+      - certs:/certs:ro
+      - ./deploy/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - booking-db-data:/var/lib/postgresql/data
+
+  # --- Миграции (Flyway, применяются автоматически при старте) --------------------
+
+  flight-migrations:
+    <<: *flyway
+    command:
+      - "-url=jdbc:postgresql://flight-db:5432/flights?sslmode=verify-full&sslrootcert=/certs/ca.crt"
+      - "-user=${POSTGRES_USER:-soa}"
+      - "-password=${POSTGRES_PASSWORD:-soa-db-password}"
+      - "-connectRetries=30"
+      - migrate
+    volumes:
+      - certs:/certs:ro
+      - ./migrations/flight:/flyway/sql:ro
+    depends_on:
+      <<: *flyway-depends
+      flight-db:
+        condition: service_healthy
+
+  booking-migrations:
+    <<: *flyway
+    command:
+      - "-url=jdbc:postgresql://booking-db:5432/bookings?sslmode=verify-full&sslrootcert=/certs/ca.crt"
+      - "-user=${POSTGRES_USER:-soa}"
+      - "-password=${POSTGRES_PASSWORD:-soa-db-password}"
+      - "-connectRetries=30"
+      - migrate
+    volumes:
+      - certs:/certs:ro
+      - ./migrations/booking:/flyway/sql:ro
+    depends_on:
+      <<: *flyway-depends
+      booking-db:
+        condition: service_healthy
+
+  # --- Redis: master + replica + 3 sentinel (кворум 2), всё по TLS ---------------
+
+  redis-master:
+    <<: *redis-node
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-soa-redis-password}
+    command: >
+      sh -c 'exec redis-server
+      --port 0 --tls-port 6379
+      --tls-cert-file /certs/redis.crt --tls-key-file /certs/redis.key --tls-ca-cert-file /certs/ca.crt
+      --tls-auth-clients no --tls-replication yes
+      --requirepass "$$REDIS_PASSWORD" --masterauth "$$REDIS_PASSWORD"
+      --replica-announce-ip redis-master
+      --appendonly no --save ""'
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+
+  redis-replica:
+    <<: *redis-node
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-soa-redis-password}
+    command: >
+      sh -c 'exec redis-server
+      --port 0 --tls-port 6379
+      --tls-cert-file /certs/redis.crt --tls-key-file /certs/redis.key --tls-ca-cert-file /certs/ca.crt
+      --tls-auth-clients no --tls-replication yes
+      --requirepass "$$REDIS_PASSWORD" --masterauth "$$REDIS_PASSWORD"
+      --replica-announce-ip redis-replica
+      --replicaof redis-master 6379
+      --appendonly no --save ""'
+    depends_on:
+      redis-master:
+        condition: service_healthy
+
+  redis-sentinel-1:
+    <<: *redis-sentinel
+    environment:
+      ANNOUNCE_HOST: redis-sentinel-1
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-soa-redis-password}
+
+  redis-sentinel-2:
+    <<: *redis-sentinel
+    environment:
+      ANNOUNCE_HOST: redis-sentinel-2
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-soa-redis-password}
+
+  redis-sentinel-3:
+    <<: *redis-sentinel
+    environment:
+      ANNOUNCE_HOST: redis-sentinel-3
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-soa-redis-password}
+
+  # --- Сервисы -------------------------------------------------------------------
+
+  flight-service:
+    build:
+      context: .
+      target: flight-service
+    image: soa/flight-service:dev
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      GRPC_ADDRESS: 0.0.0.0:50051
+      GRPC_TLS_CERT: /certs/flight-service.crt
+      GRPC_TLS_KEY: /certs/flight-service.key
+      # mTLS: клиент должен предъявить сертификат, подписанный нашим CA.
+      GRPC_TLS_CLIENT_CA: /certs/ca.crt
+      FLIGHT_SERVICE_API_KEY: ${FLIGHT_SERVICE_API_KEY:-soa-flight-api-key}
+      DB_HOST: flight-db
+      DB_PORT: 5432
+      DB_NAME: flights
+      DB_USER: ${POSTGRES_USER:-soa}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-soa-db-password}
+      DB_SSLMODE: verify_full
+      DB_SSLROOTCERT: /certs/ca.crt
+      CACHE_ENABLED: "true"
+      CACHE_TTL_MS: ${CACHE_TTL_MS:-300000}
+      RESERVATION_TTL_MS: ${RESERVATION_TTL_MS:-600000}
+      RESERVATION_SWEEP_PERIOD_MS: ${RESERVATION_SWEEP_PERIOD_MS:-5000}
+      REDIS_SENTINELS: redis-sentinel-1:26379,redis-sentinel-2:26379,redis-sentinel-3:26379
+      REDIS_MASTER_NAME: mymaster
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-soa-redis-password}
+      REDIS_TLS_MODE: verify_full
+      REDIS_TLS_CA: /certs/ca.crt
+    volumes:
+      - certs:/certs:ro
+    ports:
+      # Наружу - только для ручной проверки через grpcurl (TLS + x-api-key).
+      - "50051:50051"
+    depends_on:
+      flight-migrations:
+        condition: service_completed_successfully
+      redis-sentinel-1:
+        condition: service_healthy
+      redis-sentinel-2:
+        condition: service_healthy
+      redis-sentinel-3:
+        condition: service_healthy
+
+  booking-service:
+    build:
+      context: .
+      target: booking-service
+    image: soa/booking-service:dev
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      HTTP_PORT: 8080
+      DB_HOST: booking-db
+      DB_PORT: 5432
+      DB_NAME: bookings
+      DB_USER: ${POSTGRES_USER:-soa}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-soa-db-password}
+      DB_SSLMODE: verify_full
+      DB_SSLROOTCERT: /certs/ca.crt
+      FLIGHT_SERVICE_ADDRESS: flight-service:50051
+      FLIGHT_SERVICE_TLS_CA: /certs/ca.crt
+      FLIGHT_SERVICE_TLS_CERT: /certs/booking-service.crt
+      FLIGHT_SERVICE_TLS_KEY: /certs/booking-service.key
+      FLIGHT_SERVICE_API_KEY: ${FLIGHT_SERVICE_API_KEY:-soa-flight-api-key}
+      FLIGHT_RPC_TIMEOUT_MS: ${FLIGHT_RPC_TIMEOUT_MS:-2000}
+      FLIGHT_RETRY_MAX_ATTEMPTS: ${FLIGHT_RETRY_MAX_ATTEMPTS:-3}
+      FLIGHT_RETRY_INITIAL_BACKOFF_MS: ${FLIGHT_RETRY_INITIAL_BACKOFF_MS:-100}
+      CB_FAILURE_THRESHOLD: ${CB_FAILURE_THRESHOLD:-5}
+      CB_FAILURE_WINDOW_MS: ${CB_FAILURE_WINDOW_MS:-10000}
+      CB_OPEN_TIMEOUT_MS: ${CB_OPEN_TIMEOUT_MS:-15000}
+      # Токен для /admin/* (заголовок X-Admin-Token). Демо-значение захардкожено
+      # и на веб-странице; пустое значение выключает админку.
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-admin}
+    volumes:
+      - certs:/certs:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      booking-migrations:
+        condition: service_completed_successfully
+      flight-service:
+        condition: service_started
+
+  # --- Веб-интерфейс ------------------------------------------------------------
+
+  web:
+    # Статика (HTML/CSS/JS без сборки) + reverse proxy /api/ -> booking-service:8080.
+    # Открыть в браузере: http://localhost:3000
+    image: nginx:1.27-alpine
+    volumes:
+      - ./web/public:/usr/share/nginx/html:ro
+      - ./web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "3000:80"
+    depends_on:
+      - booking-service
+
+volumes:
+  certs:
+  flight-db-data:
+  booking-db-data:

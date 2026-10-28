@@ -1,0 +1,245 @@
+syntax = "proto3";
+
+package flight.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Flight Service: рейсы и резервирование мест.
+//
+// Бизнес-ошибки возвращаются стандартными gRPC status codes:
+//   INVALID_ARGUMENT    - некорректные параметры запроса (IATA-код, seat_count <= 0, ...);
+//   NOT_FOUND           - рейс или резервация не найдены;
+//   RESOURCE_EXHAUSTED  - недостаточно свободных мест на рейсе;
+//   FAILED_PRECONDITION - рейс не в статусе SCHEDULED или уже вылетел, или booking_id уже
+//                         использован для резервации с другими параметрами;
+//   UNAUTHENTICATED     - отсутствует или неверный API key (metadata "x-api-key");
+//   UNAVAILABLE         - временная недоступность (БД и т.п.), запрос можно повторить.
+service FlightService
+{
+    // Поиск рейсов в продаже (SCHEDULED, ещё не вылетевших) по маршруту и (опционально) дате вылета.
+    rpc SearchFlights(SearchFlightsRequest) returns (SearchFlightsResponse);
+
+    // Рейс по ID. NOT_FOUND, если рейса нет.
+    rpc GetFlight(GetFlightRequest) returns (GetFlightResponse);
+
+    // Атомарно проверяет наличие мест, уменьшает available_seats и создаёт резервацию.
+    // Резервация временная: если её не подтвердить (ConfirmReservation) до expires_at,
+    // она переходит в EXPIRED, а места возвращаются.
+    // Идемпотентен по booking_id: повторный вызов с теми же параметрами
+    // возвращает уже существующую резервацию.
+    rpc ReserveSeats(ReserveSeatsRequest) returns (ReserveSeatsResponse);
+
+    // Делает резервацию постоянной (снимает срок жизни). Идемпотентен.
+    // FAILED_PRECONDITION - резервация уже истекла или освобождена.
+    rpc ConfirmReservation(ConfirmReservationRequest) returns (ConfirmReservationResponse);
+
+    // Возвращает места активной резервации и переводит её в RELEASED.
+    // Повторный вызов для уже освобождённой резервации успешен.
+    rpc ReleaseReservation(ReleaseReservationRequest) returns (ReleaseReservationResponse);
+
+    // Административные операции.
+
+    // Новый рейс в статусе SCHEDULED (available_seats = total_seats).
+    // INVALID_ARGUMENT - неизвестные авиакомпания/аэропорт, некорректные время/места/цена;
+    // ALREADY_EXISTS - рейс с таким номером в эту дату (UTC) уже есть.
+    rpc CreateFlight(CreateFlightRequest) returns (CreateFlightResponse);
+
+    // Изменение статуса/цены рейса.
+    rpc UpdateFlight(UpdateFlightRequest) returns (UpdateFlightResponse);
+
+    // Справочники для административного интерфейса.
+    rpc ListAirports(ListAirportsRequest) returns (ListAirportsResponse);
+    rpc ListAirlines(ListAirlinesRequest) returns (ListAirlinesResponse);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+enum FlightStatus
+{
+    FLIGHT_STATUS_UNSPECIFIED = 0;
+    FLIGHT_STATUS_SCHEDULED = 1;
+    FLIGHT_STATUS_DEPARTED = 2;
+    FLIGHT_STATUS_CANCELLED = 3;
+    FLIGHT_STATUS_COMPLETED = 4;
+}
+
+enum ReservationStatus
+{
+    RESERVATION_STATUS_UNSPECIFIED = 0;
+    RESERVATION_STATUS_ACTIVE = 1;
+    RESERVATION_STATUS_RELEASED = 2;
+    RESERVATION_STATUS_EXPIRED = 3;
+}
+
+// Денежная сумма в минимальных единицах валюты (копейках/центах).
+message Money
+{
+    int64 amount_minor = 1;
+    // ISO 4217, например "RUB".
+    string currency = 2;
+}
+
+message Flight
+{
+    int64 id = 1;
+    // Номер рейса, например "SU1234".
+    string flight_number = 2;
+    // IATA-код авиакомпании, например "SU".
+    string airline_code = 3;
+    string airline_name = 4;
+    // IATA-коды аэропортов, например "VKO", "LED".
+    string origin = 5;
+    string destination = 6;
+    google.protobuf.Timestamp departure_time = 7;
+    google.protobuf.Timestamp arrival_time = 8;
+    int32 total_seats = 9;
+    int32 available_seats = 10;
+    Money price = 11;
+    FlightStatus status = 12;
+}
+
+message SeatReservation
+{
+    int64 id = 1;
+    int64 flight_id = 2;
+    // UUID бронирования из Booking Service.
+    string booking_id = 3;
+    int32 seat_count = 4;
+    ReservationStatus status = 5;
+    google.protobuf.Timestamp created_at = 6;
+    google.protobuf.Timestamp updated_at = 7;
+    // Срок жизни неподтверждённой резервации.
+    optional google.protobuf.Timestamp expires_at = 8;
+    // Момент подтверждения; не задан - резервация временная.
+    optional google.protobuf.Timestamp confirmed_at = 9;
+}
+
+// Календарная дата вылета (UTC).
+message Date
+{
+    int32 year = 1;
+    int32 month = 2;
+    int32 day = 3;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+message SearchFlightsRequest
+{
+    string origin = 1;
+    string destination = 2;
+    // Не задана - поиск по всем датам.
+    optional Date departure_date = 3;
+}
+
+message SearchFlightsResponse
+{
+    repeated Flight flights = 1;
+}
+
+message GetFlightRequest
+{
+    int64 flight_id = 1;
+}
+
+message GetFlightResponse
+{
+    Flight flight = 1;
+}
+
+message ReserveSeatsRequest
+{
+    int64 flight_id = 1;
+    int32 seat_count = 2;
+    string booking_id = 3;
+}
+
+message ReserveSeatsResponse
+{
+    SeatReservation reservation = 1;
+    // Цена за место на момент резервирования.
+    Money seat_price = 2;
+}
+
+message ConfirmReservationRequest
+{
+    string booking_id = 1;
+}
+
+message ConfirmReservationResponse
+{
+    SeatReservation reservation = 1;
+}
+
+message ReleaseReservationRequest
+{
+    string booking_id = 1;
+}
+
+message ReleaseReservationResponse
+{
+    SeatReservation reservation = 1;
+}
+
+message Airport
+{
+    // IATA-код, например "SVO".
+    string iata_code = 1;
+    string name = 2;
+    string city = 3;
+}
+
+message Airline
+{
+    // IATA-код авиакомпании, например "SU".
+    string code = 1;
+    string name = 2;
+}
+
+message CreateFlightRequest
+{
+    string airline_code = 1;
+    // Номер без кода авиакомпании: 1234 для "SU1234".
+    int32 flight_no = 2;
+    string origin = 3;
+    string destination = 4;
+    google.protobuf.Timestamp departure_time = 5;
+    google.protobuf.Timestamp arrival_time = 6;
+    int32 total_seats = 7;
+    Money price = 8;
+}
+
+message CreateFlightResponse
+{
+    Flight flight = 1;
+}
+
+message ListAirportsRequest
+{
+}
+
+message ListAirportsResponse
+{
+    repeated Airport airports = 1;
+}
+
+message ListAirlinesRequest
+{
+}
+
+message ListAirlinesResponse
+{
+    repeated Airline airlines = 1;
+}
+
+message UpdateFlightRequest
+{
+    int64 flight_id = 1;
+    optional FlightStatus status = 2;
+    optional Money price = 3;
+}
+
+message UpdateFlightResponse
+{
+    Flight flight = 1;
+}

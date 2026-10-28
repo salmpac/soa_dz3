@@ -1,0 +1,54 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            // Ctrl+Shift+B
+            "label": "Build all",
+            "detail": "ya make всех программ из src/ (musl, release) -> .build/bin",
+            "type": "shell",
+            "command": "${workspaceFolder}/scripts/build-local.sh",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": {
+                "base": "$gcc",
+                "fileLocation": "absolute"
+            },
+            "presentation": {
+                "reveal": "always",
+                "clear": true
+            }
+        },
+        {
+            "label": "Build current module",
+            "detail": "ya make ближайшего к открытому файлу ya.make",
+            "type": "shell",
+            "command": "${workspaceFolder}/scripts/build-local.sh",
+            "args": ["${relativeFile}"],
+            "group": "build",
+            "problemMatcher": {
+                "base": "$gcc",
+                "fileLocation": "absolute"
+            },
+            "presentation": {
+                "reveal": "always",
+                "clear": true
+            }
+        },
+        {
+            "label": "Regenerate compile_commands.json",
+            "detail": "Обновить базу для clangd (после добавления файлов/модулей)",
+            "type": "shell",
+            "command": "${workspaceFolder}/scripts/gen-compile-commands.sh",
+            "problemMatcher": []
+        },
+        {
+            "label": "Prepare ytsaurus",
+            "detail": "Скачать ytsaurus и musl на зафиксированных коммитах и применить патч",
+            "type": "shell",
+            "command": "${workspaceFolder}/scripts/prepare-ytsaurus.sh",
+            "problemMatcher": []
+        }
+    ]
+}

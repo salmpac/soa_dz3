@@ -1,0 +1,31 @@
+{
+    // Навигация по коду через clangd и compile_commands.json
+    // (генерируется scripts/gen-compile-commands.sh).
+    "clangd.arguments": [
+        "--compile-commands-dir=${workspaceFolder}",
+        "--background-index",
+        "--header-insertion=never",
+        "--clang-tidy=false",
+        "-j=8"
+    ],
+    "C_Cpp.intelliSenseEngine": "disabled",
+
+    // ytsaurus - это ~155k файлов: не следим за ними и не ищем по ним по умолчанию.
+    // Копия src/ внутри ytsaurus (third_party/ytsaurus/soa) нужна только ya,
+    // редактировать нужно src/.
+    "files.exclude": {
+        "third_party/ytsaurus/soa": true
+    },
+    "files.watcherExclude": {
+        "**/third_party/**": true,
+        "**/.build/**": true
+    },
+    "search.exclude": {
+        "**/third_party/**": true,
+        "**/.build/**": true
+    },
+    "files.associations": {
+        "ya.make": "cmake",
+        "*-inl.h": "cpp"
+    }
+}

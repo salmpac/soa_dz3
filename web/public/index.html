@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Авиабилеты — бронирование</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%232563eb' d='M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar__inner">
+      <a class="brand" href="#search">
+        <svg class="brand__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>
+        <span>Авиабилеты</span>
+      </a>
+      <form class="user" id="user-form" autocomplete="off">
+        <label for="user-id">Текущий пользователь</label>
+        <input id="user-id" name="user_id" type="text" maxlength="64" spellcheck="false" required>
+      </form>
+    </div>
+    <nav class="tabs" aria-label="Разделы">
+      <a class="tabs__item" href="#search" data-tab="search">Поиск рейсов</a>
+      <a class="tabs__item" href="#bookings" data-tab="bookings">Мои бронирования</a>
+      <a class="tabs__item" href="#lookup" data-tab="lookup">Найти бронь</a>
+      <a class="tabs__item" href="#admin" data-tab="admin"><span class="tabs__long">Управление рейсами</span><span class="tabs__short" aria-hidden="true">Админ</span></a>
+    </nav>
+  </header>
+
+  <main class="container">
+    <!-- Поиск рейсов -->
+    <section id="tab-search" class="tab" data-tab-panel="search" aria-labelledby="search-title">
+      <h1 id="search-title" class="visually-hidden">Поиск рейсов</h1>
+      <form id="search-form" class="card search" novalidate autocomplete="off">
+        <div class="search__route">
+          <div class="field">
+            <label for="origin">Откуда</label>
+            <input id="origin" name="origin" list="airports" placeholder="SVO" maxlength="3"
+                   autocapitalize="characters" spellcheck="false" required>
+            <small class="field__hint" data-hint-for="origin"></small>
+          </div>
+          <button type="button" class="swap" id="swap" title="Поменять местами" aria-label="Поменять местами пункты вылета и прилёта">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h11l-3-3m3 3-3 3M17 17H6l3 3m-3-3 3-3"/></svg>
+          </button>
+          <div class="field">
+            <label for="destination">Куда</label>
+            <input id="destination" name="destination" list="airports" placeholder="LED" maxlength="3"
+                   autocapitalize="characters" spellcheck="false" required>
+            <small class="field__hint" data-hint-for="destination"></small>
+          </div>
+        </div>
+        <div class="search__extra">
+          <div class="field">
+            <label for="date">Дата вылета <span class="muted">(необязательно)</span></label>
+            <div class="date-row">
+              <input id="date" name="date" type="date">
+              <button type="button" class="btn btn--ghost btn--small" id="date-clear" hidden>Любая</button>
+            </div>
+          </div>
+          <button type="submit" class="btn btn--primary btn--wide" id="search-submit">Найти рейсы</button>
+        </div>
+        <datalist id="airports"></datalist>
+        <div class="quick" aria-label="Популярные направления">
+          <span class="muted">Популярные:</span>
+          <span id="quick-routes"></span>
+        </div>
+      </form>
+
+      <div id="search-status" class="status" role="status" aria-live="polite"></div>
+      <ul id="flight-list" class="list"></ul>
+    </section>
+
+    <!-- Мои бронирования -->
+    <section id="tab-bookings" class="tab" data-tab-panel="bookings" aria-labelledby="bookings-title" hidden>
+      <div class="section-head">
+        <h1 id="bookings-title">Мои бронирования</h1>
+        <button type="button" class="btn btn--ghost btn--small" id="bookings-refresh">Обновить</button>
+      </div>
+      <p class="muted section-sub">Пользователь: <code id="bookings-user"></code></p>
+      <div id="bookings-status" class="status" role="status" aria-live="polite"></div>
+      <ul id="booking-list" class="list"></ul>
+    </section>
+
+    <!-- Поиск брони по id -->
+    <section id="tab-lookup" class="tab" data-tab-panel="lookup" aria-labelledby="lookup-title" hidden>
+      <h1 id="lookup-title">Найти бронирование</h1>
+      <form id="lookup-form" class="card lookup" novalidate autocomplete="off">
+        <div class="field">
+          <label for="lookup-id">Номер бронирования</label>
+          <input id="lookup-id" name="id" type="text" spellcheck="false" placeholder="например, 3f2a…" required>
+        </div>
+        <button type="submit" class="btn btn--primary" id="lookup-submit">Найти</button>
+      </form>
+      <div id="lookup-status" class="status" role="status" aria-live="polite"></div>
+      <ul id="lookup-result" class="list"></ul>
+    </section>
+
+    <!-- Управление рейсами (администратор) -->
+    <section id="tab-admin" class="tab" data-tab-panel="admin" aria-labelledby="admin-title" hidden>
+      <div class="section-head">
+        <h1 id="admin-title">Управление рейсами</h1>
+      </div>
+      <p class="muted section-sub">Демо-режим: запросы отправляются с токеном администратора из кода страницы.</p>
+
+      <div id="admin-ref-status" class="status" role="status" aria-live="polite"></div>
+
+      <!-- Добавить рейс -->
+      <form id="create-form" class="card admin-form" novalidate autocomplete="off" aria-labelledby="create-title">
+        <h2 id="create-title">Добавить рейс</h2>
+
+        <div class="admin-grid">
+          <div class="field">
+            <label for="cf-airline">Авиакомпания</label>
+            <select id="cf-airline" name="airline_code" required disabled><option value="">Загрузка…</option></select>
+            <small class="field__hint" data-hint-for="cf-airline"></small>
+          </div>
+          <div class="field">
+            <label for="cf-number">Номер рейса</label>
+            <input id="cf-number" name="flight_no" type="text" inputmode="numeric" maxlength="4" placeholder="1234" spellcheck="false" required>
+            <small class="field__hint" data-hint-for="cf-number">Число от 1 до 9999</small>
+          </div>
+        </div>
+
+        <div class="admin-grid">
+          <div class="field">
+            <label for="cf-origin">Откуда</label>
+            <select id="cf-origin" name="origin" required disabled><option value="">Загрузка…</option></select>
+            <small class="field__hint" data-hint-for="cf-origin"></small>
+          </div>
+          <div class="field">
+            <label for="cf-destination">Куда</label>
+            <select id="cf-destination" name="destination" required disabled><option value="">Загрузка…</option></select>
+            <small class="field__hint" data-hint-for="cf-destination"></small>
+          </div>
+        </div>
+
+        <div class="admin-grid">
+          <fieldset class="field datetime">
+            <legend id="cf-dep-legend">Вылет <span class="muted">(местное время)</span></legend>
+            <div class="datetime__row">
+              <input id="cf-dep-date" name="departure_date" type="date" aria-label="Дата вылета" required>
+              <input id="cf-dep-time" name="departure_time" type="time" aria-label="Время вылета" required>
+            </div>
+            <small class="field__hint" data-hint-for="cf-dep-date"></small>
+          </fieldset>
+          <fieldset class="field datetime">
+            <legend id="cf-arr-legend">Прилёт <span class="muted">(местное время)</span></legend>
+            <div class="datetime__row">
+              <input id="cf-arr-date" name="arrival_date" type="date" aria-label="Дата прилёта" required>
+              <input id="cf-arr-time" name="arrival_time" type="time" aria-label="Время прилёта" required>
+            </div>
+            <small class="field__hint" data-hint-for="cf-arr-date"></small>
+          </fieldset>
+        </div>
+        <div id="cf-duration" class="admin-duration muted" aria-live="polite"></div>
+
+        <div class="admin-grid">
+          <div class="field">
+            <label for="cf-seats">Всего мест</label>
+            <input id="cf-seats" name="total_seats" type="text" inputmode="numeric" maxlength="6" placeholder="150" spellcheck="false" required>
+            <small class="field__hint" data-hint-for="cf-seats"></small>
+          </div>
+          <div class="field">
+            <label for="cf-price">Цена за место, ₽</label>
+            <input id="cf-price" name="price" type="text" inputmode="decimal" maxlength="20" placeholder="5500,00" spellcheck="false" required>
+            <small class="field__hint" data-hint-for="cf-price">Валюта — RUB</small>
+          </div>
+        </div>
+
+        <div id="create-error" hidden></div>
+        <div class="admin-actions">
+          <button type="reset" class="btn btn--ghost" id="create-reset">Очистить</button>
+          <button type="submit" class="btn btn--primary" id="create-submit" disabled>Создать рейс</button>
+        </div>
+      </form>
+      <ul id="create-result" class="list admin-result"></ul>
+
+      <!-- Изменить рейс -->
+      <form id="edit-load-form" class="card lookup admin-edit-load" novalidate autocomplete="off" aria-labelledby="edit-title">
+        <div class="field">
+          <label for="edit-id" id="edit-title">Изменить рейс — номер (id) рейса</label>
+          <input id="edit-id" name="id" type="text" inputmode="numeric" maxlength="19" spellcheck="false" placeholder="например, 42" required>
+        </div>
+        <button type="submit" class="btn btn--primary" id="edit-load-submit">Загрузить</button>
+      </form>
+      <div id="edit-status" class="status" role="status" aria-live="polite"></div>
+      <ul id="edit-result" class="list"></ul>
+    </section>
+  </main>
+
+  <!-- Диалог бронирования -->
+  <dialog id="book-dialog" class="dialog" aria-labelledby="book-title">
+    <div class="dialog__head">
+      <h2 id="book-title">Бронирование</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Закрыть">&times;</button>
+    </div>
+    <div id="book-flight" class="dialog__flight"></div>
+
+    <form id="book-form" novalidate>
+      <div class="field">
+        <label for="passenger-name">Имя пассажира</label>
+        <input id="passenger-name" name="passenger_name" type="text" autocomplete="name" maxlength="200" required>
+      </div>
+      <div class="field">
+        <label for="passenger-email">Email</label>
+        <input id="passenger-email" name="passenger_email" type="email" autocomplete="email" maxlength="200" required>
+      </div>
+      <div class="field">
+        <label for="seat-count">Количество мест</label>
+        <input id="seat-count" name="seat_count" type="number" min="1" max="50" step="1" value="1" inputmode="numeric" required>
+        <small class="field__hint" id="seat-hint"></small>
+      </div>
+      <div class="total">
+        <span>Итого</span>
+        <strong id="book-total">—</strong>
+      </div>
+      <div id="book-error" hidden></div>
+      <div class="dialog__actions">
+        <button type="button" class="btn btn--ghost" data-close>Отмена</button>
+        <button type="submit" class="btn btn--primary" id="book-submit">Забронировать</button>
+      </div>
+    </form>
+
+    <div id="book-result" hidden>
+      <div class="alert alert--success" role="status">Бронирование оформлено</div>
+      <dl class="kv" id="book-result-details"></dl>
+      <div class="dialog__actions">
+        <button type="button" class="btn btn--ghost" id="book-go-bookings">Мои бронирования</button>
+        <button type="button" class="btn btn--primary" data-close>Готово</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+
+  <noscript><p class="container">Для работы приложения нужен JavaScript.</p></noscript>
+  <script src="app.js"></script>
+</body>
+</html>
